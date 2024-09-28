@@ -1,0 +1,12 @@
+04, Retragere de numerar la comerciant
+05, Cumparatura
+06, Returnarea cumparaturii
+07, Retragere numerarului
+08, Alimentarea cu numerar a contului prin POS
+09, Cumparatura cu retragere de numerar
+24, Anularea retragerii de numerar la comerciant
+25, Anularea cumparaturii (din motiv tehnic)
+26, Anularea returnarii cumparaturii
+27, Anularea retragerii de numerar
+28, Anularea alimentarii contului cu numerar
+29, Anularea cumparaturii cu retragere de numerar

@@ -26,30 +26,40 @@ def call_agent(agent_name, user_info):
 def router_agent_with_llama(prompt, user_info):
     print(f"User Prompt: {prompt}")
 
-    # Convert the list of methods to a readable format for Llama 3.2
-    methods_description = "\n".join([f"{method}: {description}" for method, description in AVAILABLE_METHODS.items()])
+    suggested_methods = []
 
-    # Prepare the prompt for Llama 3.2
-    llama_prompt = f"""
-    The following are the available methods:
-    {methods_description}
-    
-    Based on the following user prompt, identify which methods should be used:
-    "{prompt}". Please answer shortly with just an array of matching methods
-    """
-    print(f"Sending the following prompt to Llama 3.2: {llama_prompt}")
+    for method in AVAILABLE_METHODS:
+        if method in prompt:
+            suggested_methods.append(method)
 
-    # Query Llama 3.2
-    response = ollama.chat(model="llama3.2", messages=[
-        {"role": "user", "content": llama_prompt}
-    ])
+    if len(suggested_methods) == 0:
+        # Convert the list of methods to a readable format for Llama 3.2
+        methods_description = "\n".join([f"{method}: {description}" for method, description in AVAILABLE_METHODS.items()])
 
-    print(f"Llama 3.2 Response: {response['message']['content']}")
+        # Prepare the prompt for Llama 3.2
+        llama_prompt = f"""
+        The following are the available methods:
+        {methods_description}
 
-    # Process the response to extract the suggested methods
-    suggested_methods = extract_methods_from_response(response['message']['content'])
+        Based on the following user prompt, identify which methods should be used:
+        "{prompt}". Please answer shortly with just an array of matching methods
+        """
+        print(f"Sending the following prompt to Llama 3.2: {llama_prompt}")
+
+        # Query Llama 3.2
+        response = ollama.chat(model="llama3.2", messages=[
+            {"role": "user", "content": llama_prompt}
+        ])
+
+        print(f"Llama 3.2 Response: {response['message']['content']}")
+
+        # Process the response to extract the suggested methods
+        suggested_methods = extract_methods_from_response(response['message']['content'])
 
     print(f"Suggested Methods: {suggested_methods}")
+
+    if len(suggested_methods) == 0:
+        return "I apologize, I couldn't understand your request. Could you please rephrase or provide more context? Feel free to ask a different question."
 
     # Call the matching methods with the user prompt
     results = {}

@@ -1,9 +1,9 @@
 import pandas as pd
 import ollama
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from llm_agents.agents import anomaly_detection_agent, budget_prediction_agent, recommendation_engine_agent, \
-    transaction_categorization_agent, router_agent_with_llama
+from quart import Quart, request, jsonify
+from quart_cors import cors
+
+from llm_agents.agents import router_agent_with_llama
 
 # Load CSV files
 user_data = pd.read_csv('input/hd116119-2.csv', delimiter=";")
@@ -14,17 +14,17 @@ user_data.columns = user_data.columns.str.strip()
 if opt_data.empty:
     print("opt_data is empty, handling accordingly.")
 
-app = Flask("Spendog")
-CORS(app)  # This will automatically handle CORS and OPTIONS requests
+app = Quart("Spendog")
+app = cors(app)
 
 @app.route('/generate', methods=['OPTIONS', 'POST'])
-def generate_response():
+async def generate_response():
     if request.method == 'OPTIONS':
         return _build_cors_preflight_response()
 
     try:
         # Get the prompt and user_id from the POST request
-        data = request.get_json()
+        data = await request.get_json()
         prompt = data.get("prompt", "")
         user_id = data.get("user_id", "")
 
@@ -39,7 +39,7 @@ def generate_response():
             return jsonify({"error": "User not found"}), 404
 
         # Call the Router Agent to determine the correct agent(s)
-        agent_response = router_agent_with_llama(prompt, user_info)
+        agent_response = await router_agent_with_llama(prompt, user_info)
 
         return jsonify({"response": agent_response})
 

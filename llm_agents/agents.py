@@ -1,4 +1,8 @@
+import asyncio
 import ollama
+from typing import List
+
+import pandas as pd
 
 AVAILABLE_METHODS = {
     "anomaly_detection_agent": "Detects suspicious or unusual transactions in user data.",
@@ -8,22 +12,23 @@ AVAILABLE_METHODS = {
 }
 
 # Helper function to invoke the correct agent based on Llama's output
-def call_agent(agent_name, user_info):
+async def call_agent(agent_name, user_info, prompt=None):
     print(f"Calling agent: {agent_name}")
     if agent_name == "anomaly_detection_agent":
-        return anomaly_detection_agent(user_info)
+        return await anomaly_detection_agent(user_info)
     elif agent_name == "budget_prediction_agent":
-        return budget_prediction_agent(user_info)
+        return await budget_prediction_agent(user_info)
     elif agent_name == "recommendation_engine_agent":
-        return recommendation_engine_agent(user_info)
+        return await recommendation_engine_agent(user_info)
     elif agent_name == "transaction_categorization_agent":
-        return transaction_categorization_agent(user_info)
+        return await transaction_categorization_agent(user_info)
+    elif agent_name == "fallback_open_prompt_agent":
+        return await fallback_open_prompt_agent(user_info, prompt)
     else:
-        print("Invalid agent selected.")
-        return "Invalid agent selected."
+        return {"response": "Invalid agent selected."}
 
-# Router Agent using Llama 3.2 to classify and choose the correct method
-def router_agent_with_llama(prompt, user_info):
+# Asynchronous Router Agent using Llama 3.2 to classify and choose the correct method
+async def router_agent_with_llama(prompt, user_info):
     print(f"User Prompt: {prompt}")
 
     # Convert the list of methods to a readable format for Llama 3.2
@@ -35,35 +40,39 @@ def router_agent_with_llama(prompt, user_info):
     {methods_description}
     
     Based on the following user prompt, identify which methods should be used:
-    "{prompt}". Please answer shortly with just an array of matching methods
+    "{prompt}". Please answer shortly with just an array of matching methods.
     """
     print(f"Sending the following prompt to Llama 3.2: {llama_prompt}")
 
-    # Query Llama 3.2
-    response = ollama.chat(model="llama3.2", messages=[
-        {"role": "user", "content": llama_prompt}
-    ])
+    # Since ollama.chat is synchronous, use asyncio.to_thread to run it asynchronously
+    response = await asyncio.to_thread(
+        ollama.chat,
+        model="llama3.2",
+        messages=[{"role": "user", "content": llama_prompt}]
+    )
 
-    print(f"Llama 3.2 Response: {response['message']['content']}")
+    llama_response_content = response['message']['content']
+    print(f"Llama 3.2 Response: {llama_response_content}")
 
     # Process the response to extract the suggested methods
-    suggested_methods = extract_methods_from_response(response['message']['content'])
+    suggested_methods = extract_methods_from_response(llama_response_content)
 
     print(f"Suggested Methods: {suggested_methods}")
 
-    # Call the matching methods with the user prompt
-    results = {}
-    for method in suggested_methods:
-        if method in AVAILABLE_METHODS:
-            print(f"Invoking method: {method}")
-            results[method] = call_agent(method, user_info)
+    # If no matching methods, redirect to the fallback agent
+    if not suggested_methods:
+        print(f"Redirecting to fallback_open_prompt_agent")
+        return await call_agent("fallback_open_prompt_agent", user_info, prompt)
+
+    # Call the matching methods concurrently
+    tasks = [call_agent(method, user_info) for method in suggested_methods]
+    results = await asyncio.gather(*tasks)
 
     print(f"Final Results: {results}")
-    return results
+    return dict(zip(suggested_methods, results))
 
 # Helper function to extract method names from Llama's response
-def extract_methods_from_response(llama_response):
-    # Parse Llama's response to identify matching method names
+def extract_methods_from_response(llama_response: str) -> List[str]:
     print(f"Extracting methods from Llama response: {llama_response}")
     matched_methods = []
     for method in AVAILABLE_METHODS.keys():
@@ -72,99 +81,190 @@ def extract_methods_from_response(llama_response):
     print(f"Matched Methods: {matched_methods}")
     return matched_methods
 
-
-# Example function to extract specific user financial data
-def get_user_financial_data(user_info):
-    total_spent = user_info['suma tranzactiei'].sum()
-    frequent_transactions = user_info.groupby('MCC_CODE')['suma tranzactiei'].sum().nlargest(3)
-
-    print(f"Total spent: {total_spent}, Frequent transactions: {frequent_transactions}")
-    return total_spent, frequent_transactions
-
-# 1. Anomaly Detection Agent
-def anomaly_detection_agent(user_info):
-    avg_transaction = user_info['suma tranzactiei'].mean()
-    large_transactions = user_info[user_info['suma tranzactiei'] > (2 * avg_transaction)]
-
-    print(f"Average transaction: {avg_transaction}")
-    print(f"Large transactions: {large_transactions[['data si ora', 'suma tranzactiei', 'MCC_CODE']]}")
-
+# Fallback Agent for Open-ended Prompts
+async def fallback_open_prompt_agent(user_info, user_prompt):
+    # Prepare a simple prompt that contains all user data and the user's question
     prompt = f"""
-    Analyze the user's transactions to detect anomalies. The average transaction is {avg_transaction:.2f} MDL. 
-    Flag the following large or suspicious transactions: {large_transactions[['data si ora', 'suma tranzactiei', 'MCC_CODE']].to_dict()}.
+    The user has provided the following transaction data in tabular format:
+    {user_info.to_dict()}
+    
+    Based on this data, answer the following prompt from the user in markdown format:
+    {user_prompt}
     """
 
-    response = ollama.chat(model='neural-chat', messages=[
-        {
-            'role': 'user',
-            'content': prompt
-        },
-    ])
+    # Send the prompt to Ollama as an open-ended question
+    response = await asyncio.to_thread(
+        ollama.chat,
+        model='neural-chat',
+        messages=[{'role': 'user', 'content': prompt}]
+    )
 
+    print(f"Fallback Agent Response: {response['message']['content']}")
+    return {"response": response['message']['content']}
+
+# 1. Anomaly Detection Agent
+async def anomaly_detection_agent(user_info):
+    # Calculate the average transaction and set a threshold for significant anomalies
+    avg_transaction = user_info['suma tranzactiei'].mean()
+    threshold = 2 * avg_transaction  # We use a 2x average as the anomaly threshold
+    significant_anomalies = user_info[user_info['suma tranzactiei'] > threshold]
+
+    # Generate a prompt that focuses only on the significant anomalies
+    prompt = f"""
+        Let's focus on the significant anomalies in MDL currency. The threshold for detecting anomalies is {threshold:.2f} MDL.
+        Analyze only the following transactions that exceed this threshold and flag them:
+        {significant_anomalies[['data si ora', 'suma tranzactiei', 'MCC_CODE']].to_dict()}.
+        In one sentence, explain why this transaction is flagged as an anomaly in markdown format.
+        """
+
+    # Use asyncio.to_thread to run the synchronous ollama.chat asynchronously
+    response = await asyncio.to_thread(
+        ollama.chat,
+        model='neural-chat',
+        messages=[{'role': 'user', 'content': prompt}]
+    )
+
+    # Output the response from the Llama model
     print(f"Anomaly Detection Response: {response['message']['content']}")
     return response['message']['content']
 
 # 2. Budget Prediction Agent
-def budget_prediction_agent(user_info):
+async def budget_prediction_agent(user_info):
+    savings_goal = 10000
+    months_remaining = 12
+    # Handle missing or incorrect data gracefully
+    if 'suma tranzactiei' not in user_info.columns or 'data si ora' not in user_info.columns or 'MCC_CODE' not in user_info.columns:
+        return {"response": "Invalid data format. Columns 'suma tranzactiei', 'data si ora', or 'MCC_CODE' are missing."}
+
+    # Convert 'data si ora' to datetime
+    if not pd.api.types.is_datetime64_any_dtype(user_info['data si ora']):
+        user_info['data si ora'] = pd.to_datetime(user_info['data si ora'], errors='coerce')
+
+    # Filter out invalid dates
+    user_info = user_info.dropna(subset=['data si ora'])
+
+    # Calculate total spending
     total_spent = user_info['suma tranzactiei'].sum()
-    avg_monthly_spent = total_spent / (user_info['data si ora'].nunique() / 30)  # Approx monthly average
 
-    print(f"Total spent: {total_spent}, Average monthly spent: {avg_monthly_spent}")
+    # Calculate the number of months spanned by the transaction data
+    start_date = user_info['data si ora'].min()
+    end_date = user_info['data si ora'].max()
 
+    # Calculate the total number of days and approximate months
+    days_spanned = (end_date - start_date).days
+    num_months = days_spanned / 30.44  # Approximate number of months based on average days per month
+
+    if num_months <= 0:
+        return {"response": "Insufficient data to calculate monthly spending."}
+
+    # Calculate average monthly spending
+    avg_monthly_spent = total_spent / num_months
+
+    # Categorize transactions by 'MCC_CODE'
+    category_spending = user_info.groupby('MCC_CODE')['suma tranzactiei'].sum().sort_values(ascending=False)
+
+    # Get the top category to cut
+    top_category_to_cut = category_spending.idxmax()
+    spending_in_top_category = category_spending.max()
+
+    # Calculate the monthly savings target to reach the goal
+    monthly_savings_target = savings_goal / months_remaining
+
+    # Calculate potential savings from the top category (suggest a 20-30% cut to gradually meet the target)
+    potential_savings = spending_in_top_category * 0.25  # Suggest cutting 25% from the top category
+
+    # Formulate a concise prompt for Ollama
     prompt = f"""
-    The user spends approximately {avg_monthly_spent:.2f} MDL per month. Based on their transaction history, 
-    generate a personalized monthly budget that takes into account their income and regular expenses.
+    The user needs to save 10,000 LEI over the next {months_remaining} months. This requires approximately {monthly_savings_target:.2f} LEI per month in savings.
+    The biggest spending category is MCC Code '{top_category_to_cut}', accounting for {spending_in_top_category:.2f} LEI.
+    Suggest how the user can gradually reduce spending in this category or other categories to meet their savings goal. Please provide the response in markdown format.
     """
 
-    response = ollama.chat(model='neural-chat', messages=[
-        {
-            'role': 'user',
-            'content': prompt
-        },
-    ])
+    # Use asyncio.to_thread to run the synchronous ollama.chat asynchronously
+    response = await asyncio.to_thread(
+        ollama.chat,
+        model='neural-chat',
+        messages=[{'role': 'user', 'content': prompt}]
+    )
 
-    print(f"Budget Prediction Response: {response['message']['content']}")
     return response['message']['content']
 
 # 3. Recommendation Engine Agent
-def recommendation_engine_agent(user_info):
-    total_savings = user_info['suma tranzactiei'].sum() * 0.20  # Assume 20% of spending can be saved
-    categories = user_info.groupby('MCC_CODE')['suma tranzactiei'].sum().nlargest(3).to_dict()
+async def recommendation_engine_agent(user_info):
+    # Define constants
+    annual_rate = 0.10
+    compounding_periods = 12
+    years_list = [5, 10, 20]
+    total_income = 10000  # Assume a fixed monthly income, or fetch from user data
 
-    print(f"Total savings: {total_savings}, Top categories: {categories}")
+    # Handle missing or incorrect data gracefully
+    if 'suma tranzactiei' not in user_info.columns or 'data si ora' not in user_info.columns:
+        return {"response": "Invalid data format. Columns 'suma tranzactiei' or 'data si ora' are missing."}
 
+    # Convert 'data si ora' to datetime if not already
+    if not pd.api.types.is_datetime64_any_dtype(user_info['data si ora']):
+        user_info['data si ora'] = pd.to_datetime(user_info['data si ora'], errors='coerce')
+
+    # Filter out invalid dates
+    user_info = user_info.dropna(subset=['data si ora'])
+
+    # Calculate total spending over the last 12 months
+    last_12_months_data = user_info[user_info['data si ora'] > (user_info['data si ora'].max() - pd.DateOffset(months=12))]
+    total_spent = last_12_months_data['suma tranzactiei'].sum()
+
+    # Calculate average monthly savings
+    avg_monthly_savings = total_income - (total_spent / 12)
+
+    if avg_monthly_savings <= 0:
+        return {"response": "The user does not have enough savings to invest based on the last 12 months of data."}
+
+    # Helper function to calculate future value
+    def calculate_future_value(monthly_savings, years, annual_rate=0.10, compounding_periods=12):
+        total_months = years * compounding_periods
+        future_value = monthly_savings * (((1 + (annual_rate / compounding_periods)) ** total_months - 1) / (annual_rate / compounding_periods))
+        return future_value
+
+    # Calculate future values for 5, 10, and 20 years
+    projections = {years: calculate_future_value(avg_monthly_savings, years, annual_rate) for years in years_list}
+
+    # Formulate a concise prompt for Ollama
     prompt = f"""
-    Based on the user's savings potential of {total_savings:.2f} MDL, provide personalized investment advice. 
-    Their top spending categories are: {categories}. Recommend low-risk and medium-risk investment options based on their financial behavior.
+    Based on the user’s last 12 months of spending, their average monthly savings is approximately {avg_monthly_savings:.2f} LEI.
+    Calculate the projected value of these savings if invested at a 10% annual return for 5, 10, and 20 years.
+    For 5 years: {projections[5]:.2f} LEI, for 10 years: {projections[10]:.2f} LEI, and for 20 years: {projections[20]:.2f} LEI.
+    Provide recommendations for investment strategies and suggest how to maximize returns in markdown format.
     """
 
-    response = ollama.chat(model='neural-chat', messages=[
-        {
-            'role': 'user',
-            'content': prompt
-        },
-    ])
+    # Use asyncio.to_thread to run the synchronous ollama.chat asynchronously
+    response = await asyncio.to_thread(
+        ollama.chat,
+        model='neural-chat',
+        messages=[{'role': 'user', 'content': prompt}]
+    )
 
-    print(f"Recommendation Response: {response['message']['content']}")
     return response['message']['content']
 
 # 4. Transaction Categorization Agent
-def transaction_categorization_agent(user_info):
+async def transaction_categorization_agent(user_info):
+    # Group transactions by MCC_CODE and calculate total spending per category
     categories = user_info.groupby('MCC_CODE')['suma tranzactiei'].sum().to_dict()
 
-    print(f"Transaction categories: {categories}")
-
+    # Prepare the prompt for Ollama to categorize transactions and provide suggestions
     prompt = f"""
-    Categorize the user's transactions based on the MCC codes. The following are the total amounts spent in each category: {categories}.
-    Generate a summary of the user's expenses and suggest ways to optimize spending.
+    Based on the user's transaction data, categorize the expenses into groups such as groceries, dining, transportation, and utilities. 
+    The following are the total amounts spent in each category based on MCC codes: {categories}.
+    Highlight which category the user spends the most on, and suggest ways to optimize their spending.
+    Provide insights into the top three areas where the user can reduce spending, and how much should be saved in each category in markdown format.
+    Also, summarize the user's spending habits in the last 12 months, and provide any suggestions for adjustments.
     """
 
-    response = ollama.chat(model='neural-chat', messages=[
-        {
-            'role': 'user',
-            'content': prompt
-        },
-    ])
+    # Use asyncio.to_thread to run the synchronous ollama.chat asynchronously
+    response = await asyncio.to_thread(
+        ollama.chat,
+        model='neural-chat',
+        messages=[{'role': 'user', 'content': prompt}]
+    )
 
+    # Print and return the response for further use in the application
     print(f"Transaction Categorization Response: {response['message']['content']}")
     return response['message']['content']

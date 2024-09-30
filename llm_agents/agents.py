@@ -109,12 +109,25 @@ async def anomaly_detection_agent(user_info):
     threshold = 2 * avg_transaction  # We use a 2x average as the anomaly threshold
     significant_anomalies = user_info[user_info['suma tranzactiei'] > threshold]
 
+    # Check if there are any significant anomalies
+    if significant_anomalies.empty:
+        return "No significant anomalies detected."
+
+    # Extract relevant transaction details and prepare markdown-friendly format
+    transactions_info = []
+    for index, row in significant_anomalies.iterrows():
+        transaction_info = f"- **Transaction ID**: {index}, **MCC Code**: {row['MCC_CODE']}, **Date and Time**: {row['data si ora']}, **Amount**: {row['suma tranzactiei']:.2f} MDL"
+        transactions_info.append(transaction_info)
+
+    # Join the transaction info into a single string to pass to the prompt
+    transactions_markdown = "\n".join(transactions_info)
+
     # Generate a prompt that focuses only on the significant anomalies
     prompt = f"""
         Let's focus on the significant anomalies in MDL currency. The threshold for detecting anomalies is {threshold:.2f} MDL.
-        Analyze only the following transactions that exceed this threshold and flag them:
-        {significant_anomalies[['data si ora', 'suma tranzactiei', 'MCC_CODE']].to_dict()}.
-        In one sentence, explain why this transaction is flagged as an anomaly in markdown format.
+        Please analyze only the following transactions and explain why each is flagged as an anomaly:
+        {transactions_markdown}
+        For each transaction, explain briefly why it is flagged as an anomaly in markdown format.
         """
 
     # Use asyncio.to_thread to run the synchronous ollama.chat asynchronously
